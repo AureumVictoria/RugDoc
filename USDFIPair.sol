@@ -1,4 +1,4 @@
-pragma solidity =0.5.16;
+pragma solidity = 0.5.16;
 
 import "./IUSDFIPair.sol";
 import "./UniswapERC20.sol";
@@ -20,10 +20,16 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
   address public token0;
   address public token1;
 
-  uint public constant FEE_DENOMINATOR = 100000;
+  uint public constant FEE_DENOMINATOR = 100000; // = 100%
   uint public constant MAX_FEE_AMOUNT = 300; // = 0.3%
   uint public constant MIN_FEE_AMOUNT = 10; // = 0.01%
-  uint public feeAmount = 300; // default = 0.30%
+  uint public constant PROTOCOL_FEE_SHARE_MAX = 95000; // = 95%
+  uint public constant OWNER_FEE_SHARE_MAX = 95000; // = 95%
+
+  uint public feeAmount;
+  uint public protocolFeeShare;
+  uint public ownerFeeShare;
+  address public feeTo;
 
   uint112 private reserve0;           // uses single storage slot, accessible via getReserves
   uint112 private reserve1;           // uses single storage slot, accessible via getReserves
@@ -52,8 +58,9 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
     require(success && (data.length == 0 || abi.decode(data, (bool))), "USDFIPair: TRANSFER_FAILED");
   }
 
+  event FeeAmountUpdated(uint prevFeeAmount, uint indexed feeAmount, uint prevProtocolFeeShare, uint indexed protocolFeeShare, uint prevNewOwnerFeeShare, uint indexed ownerFeeShare);
+
   event DrainWrongToken(address indexed token, address to);
-  event FeeAmountUpdated(uint prevFeeAmount, uint feeAmount);
   event Mint(address indexed sender, uint amount0, uint amount1);
   event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
   event Swap(
@@ -68,6 +75,10 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
 
   constructor() public {
     factory = msg.sender;
+    feeAmount = IUSDFIFactory(factory).baseFeeAmount();
+    ownerFeeShare = IUSDFIFactory(factory).baseOwnerFeeShare();
+    protocolFeeShare = IUSDFIFactory(factory).baseProtocolFeeShare();
+    feeTo = IUSDFIFactory(factory).baseFeeTo();
     protocolFeeTo = IUSDFIFactory(factory).baseProtocolVault();
   }
 
@@ -77,30 +88,6 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
     // sufficient check
     token0 = _token0;
     token1 = _token1;
-  }
-
-  /**
-  * @dev Updates the swap fees amount
-  *
-  * Can only be called by the factory's owner (feeAmountOwner)
-  */
-  function setFeeAmount(uint newFeeAmount) external {
-    require(msg.sender == IUSDFIFactory(factory).feeAmountOwner(), "USDFIPair: only factory's feeAmountOwner");
-    require(newFeeAmount <= MAX_FEE_AMOUNT, "USDFIPair: feeAmount mustn't exceed the maximum");
-    require(newFeeAmount >= MIN_FEE_AMOUNT, "USDFIPair: feeAmount mustn't exceed the minimum");
-    uint prevFeeAmount = feeAmount;
-    feeAmount = newFeeAmount;
-    emit FeeAmountUpdated(prevFeeAmount, feeAmount);
-  }
-
-  /**
-  * @dev Updates the swap fees recipient
-  *
-  * Can only be called by the factory's owner (feeAmountOwner)
-  */
-  function setProtocolFeeTo(address _protocolFeeTo) external {
-        require(msg.sender == IUSDFIFactory(factory).feeAmountOwner(), "USDFIPair: only factory's feeAmountOwner");
-        protocolFeeTo = _protocolFeeTo;
   }
 
   // update reserves and, on the first call per block, price accumulators
@@ -120,9 +107,8 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
     emit Sync(reserve0, reserve1);
   }
 
-  // if fee is on, mint liquidity equivalent to "factory.ownerFeeShare()" of the growth in sqrt(k)
+  // if fee is on, mint liquidity equivalent to "ownerFeeShare" of the growth in sqrt(k)
   function _mintFee(uint112 _reserve0, uint112 _reserve1) private returns (bool feeOn) {
-    address feeTo = IUSDFIFactory(factory).feeTo();
     feeOn = feeTo != address(0);
     uint _kLast = kLast;
     // gas savings
@@ -131,7 +117,7 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
         uint rootK = Math.sqrt(uint(_reserve0).mul(_reserve1));
         uint rootKLast = Math.sqrt(_kLast);
         if (rootK > rootKLast) {
-          uint d = (FEE_DENOMINATOR / IUSDFIFactory(factory).ownerFeeShare()).sub(1);
+          uint d = (FEE_DENOMINATOR / ownerFeeShare).sub(1);
           uint numerator = totalSupply.mul(rootK.sub(rootKLast));
           uint denominator = rootK.mul(d).add(rootKLast);
           uint liquidity = numerator / denominator;
@@ -237,7 +223,7 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
       require(balance0Adjusted.mul(balance1Adjusted) >= uint(reserve0).mul(reserve1).mul(feeDenominator ** 2), "USDFIPair: K");
     }
     {// scope for protocol fee management
-      uint protocolInputFeeAmount = protocol != address(0) ? IUSDFIFactory(factory).protocolsFeeShare(protocol).mul(_feeAmount) : 0;
+      uint protocolInputFeeAmount = protocol != address(0) ? protocolFeeShare.mul(_feeAmount) : 0;
       if (protocolInputFeeAmount > 0) {
         if (amount0In > 0) {
           address _token0 = token0;
@@ -274,14 +260,69 @@ contract USDFIPair is IUSDFIPair, UniswapERC20 {
   }
 
   /**
-  * @dev Allow to recover token sent here by mistake
-  *
-  * Can only be called by factory's owner
-  */
+    * @dev Allow to recover token sent here by mistake
+    *
+    * Can only be called by factory's owner
+    */
   function drainWrongToken(address token, address to) external {
     require(msg.sender == IUSDFIFactory(factory).owner(), "USDFIPair: only factory's owner");
     require(token != token0 && token != token1, "USDFIPair: invalid token");
     _safeTransfer(token, to, IERC20(token).balanceOf(address(this)));
     emit DrainWrongToken(token, to);
   }
+
+////////////////
+
+  /**
+   * @dev Updates the fees
+   *
+   * - updates the swap fees amount
+   * - updates the share of fees attributed to the given protocol when a swap went through him
+   * - updates the share of fees attributed to the FeeToOwner
+   *
+   * Can only be called by the factory's owner (feeAmountOwner)
+   */
+  function setFeeAmount(uint _newFeeAmount, uint _newProtocolFeeShare, uint _newOwnerFeeShare) external {
+    require(msg.sender == IUSDFIFactory(factory).feeAmountOwner(), "USDFIPair: only factory's feeAmountOwner");
+    require(_newFeeAmount <= MAX_FEE_AMOUNT, "USDFIPair: feeAmount mustn't exceed the maximum");
+    require(_newFeeAmount >= MIN_FEE_AMOUNT, "USDFIPair: feeAmount mustn't exceed the minimum");
+    uint prevFeeAmount = feeAmount;
+    feeAmount = _newFeeAmount;
+
+    require(_newProtocolFeeShare.add(_newOwnerFeeShare) < FEE_DENOMINATOR, "USDFIPair: fees mustn't exceed maximum (FEE_DENOMINATOR)");
+
+    require(_newProtocolFeeShare <= PROTOCOL_FEE_SHARE_MAX, "USDFIPair: protocolFeeShare mustn't exceed maximum");
+    uint prevProtocolFeeShare = protocolFeeShare;
+    protocolFeeShare = _newProtocolFeeShare;
+
+    require(_newOwnerFeeShare > 0, "USDFIPair: ownerFeeShare mustn't exceed minimum");
+    require(_newOwnerFeeShare <= OWNER_FEE_SHARE_MAX, "USDFIPair: ownerFeeShare mustn't exceed maximum");
+    uint prevNewOwnerFeeShare = ownerFeeShare;
+    ownerFeeShare = _newOwnerFeeShare;
+
+    emit FeeAmountUpdated(prevFeeAmount, feeAmount, prevProtocolFeeShare, protocolFeeShare, prevNewOwnerFeeShare, ownerFeeShare);
+  }
+
+////////////////
+
+  /**
+   * @dev Updates the new mintet LPs (fees) recipient
+   *
+   * Can only be called by the factory's owner (feeAmountOwner)
+   */
+  function setFeeTo(address _feeTo) external {
+        require(msg.sender == IUSDFIFactory(factory).feeAmountOwner(), "USDFIPair: only factory's feeAmountOwner");
+        feeTo = _feeTo;
+    }
+
+  /**
+   * @dev Updates the swap fees recipient
+   *
+   * Can only be called by the factory's owner (feeAmountOwner)
+   */
+  function setProtocolFeeTo(address _protocolFeeTo) external {
+        require(msg.sender == IUSDFIFactory(factory).feeAmountOwner(), "USDFIPair: only factory's feeAmountOwner");
+        protocolFeeTo = _protocolFeeTo;
+  }
+
 }
