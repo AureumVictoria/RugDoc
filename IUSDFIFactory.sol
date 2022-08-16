@@ -5,10 +5,6 @@ interface IUSDFIFactory {
 
     function owner() external view returns (address);
     function feeAmountOwner() external view returns (address);
-    function feeTo() external view returns (address);
-
-    function ownerFeeShare() external view returns (uint256);
-    function protocolsFeeShare(address) external view returns (uint256);
 
     function getPair(address tokenA, address tokenB) external view returns (address pair);
     function allPairs(uint256) external view returns (address pair);
@@ -16,6 +12,9 @@ interface IUSDFIFactory {
 
     function createPair(address tokenA, address tokenB) external returns (address pair);
 
-    function setFeeTo(address) external;
+    function baseFeeAmount() external view returns (uint256);
+    function baseOwnerFeeShare() external view returns (uint256);
+    function baseProtocolFeeShare() external view returns (uint256);
+    function baseFeeTo() external view returns (address);
     function baseProtocolVault() external view returns (address);
 }
