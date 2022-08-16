@@ -8,31 +8,38 @@ contract USDFIFactory is IUSDFIFactory {
 
     address public owner;
     address public feeAmountOwner;
-    address public feeTo;
+
+    uint256 public baseFeeAmount;
+    uint256 public baseOwnerFeeShare;
+    uint256 public baseProtocolFeeShare;
     address public baseProtocolVault;
+    address public baseFeeTo;
 
-    //uint public constant FEE_DENOMINATOR = 100000;
-    uint public constant OWNER_FEE_SHARE_MAX = 95000; // 95%
-    uint public ownerFeeShare = 5000; // default value = 5%
-
-    uint public constant PROTOCOL_FEE_SHARE_MAX = 95000; // 95%
-    mapping(address => uint) public protocolsFeeShare; // fees are taken from the user input
+    uint public constant FEE_DENOMINATOR = 100000; // = 100%
+    uint public constant MAX_FEE_AMOUNT = 300; // = 0.3%
+    uint public constant MIN_FEE_AMOUNT = 10; // = 0.01%
+    uint public constant PROTOCOL_FEE_SHARE_MAX = 95000; // = 95%
+    uint public constant OWNER_FEE_SHARE_MAX = 95000; // = 95%
 
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
 
     event FeeToTransferred(address indexed prevFeeTo, address indexed newFeeTo);
     event PairCreated(address indexed token0, address indexed token1, address pair, uint);
-    event OwnerFeeShareUpdated(uint prevOwnerFeeShare, uint ownerFeeShare);
     event OwnershipTransferred(address indexed prevOwner, address indexed newOwner);
     event FeeAmountOwnershipTransferred(address indexed prevOwner, address indexed newOwner);
-    event ProtocolFeeShareUpdated(address protocol, uint prevProtocolFeeShare, uint protocolFeeShare);
+    event BaseFeesUpdated(uint256 prevBaseFeeAmount, uint256 indexed _baseFeeAmount, uint256 prevBaseOwnerFeeShare, uint256 indexed _baseOwnerFeeShare,uint256 prevBaseProtocolFeeShare, uint256 indexed _baseProtocolFeeShare);
+    event BaseProtocolVaultUpdated(address baseProtocolVault, address indexed _baseProtocolVault);
+    event BaseFeeToUpdated(address baseFeeTo, address indexed _baseFeeTo);
 
-    constructor(address feeTo_, address _baseProtocolVault) public {
+    constructor(uint256 _baseFeeAmount, uint256 _baseOwnerFeeShare, uint256 _baseProtocolFeeShare, address _baseProtocolVault, address baseFeeTo_) public {
         owner = msg.sender;
         feeAmountOwner = msg.sender;
-        feeTo = feeTo_;
+        baseFeeAmount = _baseFeeAmount; // 300 default = 0.30%
+        baseOwnerFeeShare = _baseOwnerFeeShare; // 5000 default value = 5%
+        baseProtocolFeeShare = _baseProtocolFeeShare; // 90000 default = 90%
         baseProtocolVault = _baseProtocolVault;
+        baseFeeTo = baseFeeTo_;
     }
 
     /**
@@ -76,43 +83,39 @@ contract USDFIFactory is IUSDFIFactory {
         feeAmountOwner = _feeAmountOwner;
     }
 
-    function setFeeTo(address _feeTo) external onlyOwner {
-        emit FeeToTransferred(feeTo, _feeTo);
-        feeTo = _feeTo;
+    //////
+
+    function setBaseFees(uint256 _baseFeeAmount, uint256 _baseOwnerFeeShare, uint256 _baseProtocolFeeShare) external onlyOwner {
+        require(_baseFeeAmount <= MAX_FEE_AMOUNT, "USDFIPair: feeAmount mustn't exceed the maximum");
+        require(_baseFeeAmount >= MIN_FEE_AMOUNT, "USDFIPair: feeAmount mustn't exceed the minimum");
+        uint256 prevBaseFeeAmount = baseFeeAmount;
+        baseFeeAmount = _baseFeeAmount;
+
+        require(_baseOwnerFeeShare + _baseProtocolFeeShare < FEE_DENOMINATOR, "USDFIPair: fees mustn't exceed maximum (FEE_DENOMINATOR)");
+
+        require(_baseOwnerFeeShare > 0, "USDFIPair: ownerFeeShare mustn't exceed minimum");
+        require(_baseOwnerFeeShare <= OWNER_FEE_SHARE_MAX, "USDFIPair: ownerFeeShare mustn't exceed maximum");
+        uint256 prevBaseOwnerFeeShare = baseOwnerFeeShare;
+        baseOwnerFeeShare = _baseOwnerFeeShare;
+
+        require(_baseProtocolFeeShare <= PROTOCOL_FEE_SHARE_MAX, "USDFIPair: protocolFeeShare mustn't exceed maximum");
+        uint256 prevBaseProtocolFeeShare = baseProtocolFeeShare;
+        baseProtocolFeeShare = _baseProtocolFeeShare;
+
+        emit BaseFeesUpdated(prevBaseFeeAmount, _baseFeeAmount, prevBaseOwnerFeeShare, _baseOwnerFeeShare, prevBaseProtocolFeeShare, _baseProtocolFeeShare);
     }
 
-    function setProtocolVaultFeeTo(address _pair, address _protocolFeeTo) external onlyOwner {
-        require(_protocolFeeTo != address(0), "USDFIFactory: zero address");
-         USDFIPair(_pair).setProtocolFeeTo(_protocolFeeTo);
-    }
+    //////
 
     function setBaseProtocolVault(address _baseProtocolVault) external onlyOwner {
         require(_baseProtocolVault != address(0), "USDFIFactory: zero address");
+        emit BaseProtocolVaultUpdated(baseProtocolVault, _baseProtocolVault);
         baseProtocolVault = _baseProtocolVault;
     }
 
-    /**
-     * @dev Updates the share of fees attributed to the owner (FeeManager)
-     *
-     * Must only be called by owner
-     */
-    function setOwnerFeeShare(uint newOwnerFeeShare) external onlyOwner {
-        require(newOwnerFeeShare > 0, "USDFIFactory: ownerFeeShare mustn't exceed minimum");
-        require(newOwnerFeeShare <= OWNER_FEE_SHARE_MAX, "USDFIFactory: ownerFeeShare mustn't exceed maximum");
-        uint prevOwnerFeeShare = ownerFeeShare;
-        ownerFeeShare = newOwnerFeeShare;
-        emit OwnerFeeShareUpdated(prevOwnerFeeShare, ownerFeeShare);
-    }
-
-    /**
-     * @dev Updates the share of fees attributed to the given protocol when a swap went through him
-     *
-     * Must only be called by owner
-     */
-    function setProtocolFeeShare(address protocol, uint protocolFeeShare) external onlyOwner {
-        require(protocolFeeShare <= PROTOCOL_FEE_SHARE_MAX, "USDFIFactory: protocolFeeShare mustn't exceed maximum");
-        uint prevProtocolFeeShare = protocolsFeeShare[protocol];
-        protocolsFeeShare[protocol] = protocolFeeShare;
-        emit ProtocolFeeShareUpdated(protocol, prevProtocolFeeShare, protocolFeeShare);
+    function setBaseFeeTo(address _baseFeeTo) external onlyOwner {
+        require(_baseFeeTo != address(0), "USDFIFactory: zero address");
+        emit BaseFeeToUpdated(baseFeeTo, _baseFeeTo);
+        baseFeeTo = _baseFeeTo;
     }
 }
