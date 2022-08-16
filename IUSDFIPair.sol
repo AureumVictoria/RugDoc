@@ -43,8 +43,8 @@ interface IUSDFIPair {
     function price1CumulativeLast() external view returns (uint);
     function kLast() external view returns (uint);
 
-    function setFeeAmount(uint newFeeAmount) external;
-    function setProtocolFeeTo(address _protocolFeeTo) external;
+    function setFeeAmount(uint _newFeeAmount, uint _newProtocolFeeShare, uint _newOwnerFeeShare) external;
+
     function mint(address to) external returns (uint liquidity);
     function burn(address to) external returns (uint amount0, uint amount1);
     function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;
